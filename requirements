@@ -1,14 +1,14 @@
-# Core dependencies
-flask==2.3.2
+# Core dependencies (adjusted versions)
+flask==2.2.5  # Downgraded to work with dash
 flask-socketio==5.3.6
 python-dotenv==1.0.0
 
-# Dash/Plotly
+# Dash/Plotly (compatible versions)
 dash==2.11.1
 dash-bootstrap-components==1.4.1
 plotly==5.15.0
 
-# TensorFlow Lite (use latest compatible version)
+# TensorFlow Lite
 tflite-runtime>=2.14.0
 
 # Raspberry Pi specific
