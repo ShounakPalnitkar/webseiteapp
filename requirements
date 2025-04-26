@@ -1,26 +1,11 @@
-# Core Flask & Web
 flask==2.2.5
 flask-socketio==5.3.6
-eventlet==0.33.3  # Critical for WebSockets
-
-# Analytics Dashboard
+gunicorn==20.1.0
+eventlet==0.33.3
 dash==2.11.1
-dash-bootstrap-components==1.4.1
 plotly==5.15.0
-pandas==2.0.3
-
-# AI/Computer Vision
-tflite-runtime==2.14.0
 opencv-python-headless==4.8.1.78
 numpy==1.24.4
-
-# Hardware Control
-lgpio==0.2.2.0  # For ultrasonic sensors
-psutil==5.9.6  # For battery monitoring
-
-# Firebase Integration
 firebase-admin==6.2.0
-requests==2.31.0
-
-# Optional (Uncomment if needed)
-# pyngrok==7.0.0  # For remote access
+pandas==2.0.3
+# Remove lgpio, tflite-runtime if not using AI
