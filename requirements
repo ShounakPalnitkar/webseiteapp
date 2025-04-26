@@ -1,25 +1,93 @@
-# Core dependencies (adjusted versions)
-flask==2.2.5  # Downgraded to work with dash
-flask-socketio==5.3.6
-python-dotenv==1.0.0
+lask==2.2.5
 
-# Dash/Plotly (compatible versions)
+flask-socketio==5.3.6
+
+python-dotenv==1.0.0  # Not directly in the code, but you've included it
+
 dash==2.11.1
+
 dash-bootstrap-components==1.4.1
+
 plotly==5.15.0
 
-# TensorFlow Lite
 tflite-runtime>=2.14.0
 
-# Raspberry Pi specific
 picamera2 @ https://github.com/raspberrypi/picamera2/archive/main.zip
+
 lgpio==0.2.2.0
+
 numpy==1.24.4
+
 opencv-python-headless==4.8.1.78
 
-# Other utilities
 firebase-admin==6.2.0
+
 psutil==5.9.6
+
 pandas==2.0.3
+
 requests==2.31.0
+
 pyngrok==7.0.0
+
+subprocess
+
+os
+
+json
+
+threading
+
+time
+
+shutil
+
+socket
+
+datetime
+
+zipfile
+
+getpass
+
+collections.deque
+
+re
+
+csv
+
+Hardware:
+
+Raspberry Pi
+
+Raspberry Pi Camera
+
+Ultrasonic Sensors
+
+Battery
+
+Software/Services:
+
+Firebase:
+
+Firestore
+
+ngrok (Optional)
+
+Configuration Files:
+
+/home/ada/de/smartaid-6c5c0-firebase-adminsdk-fbsvc-cee03b08da.json
+
+/home/ada/de/coco_labels.txt
+
+/home/ada/de/mobilenet_v2.tflite
+
+/home/ada/de/detection/config.json
+
+/home/ada/de/app_server/web_app
+
+System Configuration:
+
+User: 'ada'
+
+File Paths: As specified in the code.
