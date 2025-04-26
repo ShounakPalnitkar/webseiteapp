@@ -466,9 +466,6 @@ def ultrasonic_loop():
                         else:
                             readings[name] = None
                             detection_timers.pop(name, None)
-                    else:
-                        readings[name] = None
-                        detection_timers.pop(name, None)
                 else:
                     readings[name] = None
                     failed.append(name)
@@ -482,10 +479,8 @@ def ultrasonic_loop():
                     if dist and dist < threshold:
                         baseline = baseline_distances.get(name, 100)
                         side = "left" if "Left" in name else "right"
-
                         if left_close and right_close:
                             continue
-
                         if dist < baseline * 0.6:
                             if name not in detection_timers:
                                 detection_timers[name] = now
@@ -514,9 +509,9 @@ def ultrasonic_loop():
             })
             health_status = "OK" if not failed else f"Sensor fault: {', '.join(failed)}"
             time.sleep(1)
-
     except Exception as e:
         print("[Ultrasonic Error]", e)
+        health_status = "Ultrasonic error"
     finally:
         if h is not None:
             try:
@@ -529,9 +524,8 @@ def battery_monitor():
     while True:
         battery = psutil.sensors_battery()
         percent = battery.percent if battery else 100
-
         db.collection('battery_logs').add({
-            'timestamp': int(time.time() * 1000),
+            'timestamp': int(time.time()* 1000),
             'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'battery_percentage': percent
         })
@@ -540,554 +534,57 @@ def battery_monitor():
             warned = True
         if percent > 30:
             warned = False
-
         time.sleep(60)
 
 def system_metrics_monitor():
     while True:
-        try:
-            temps = psutil.sensors_temperatures()
-            cpu_temp = 0
-            for group in temps.values():
-                if group and isinstance(group, list) and hasattr(group[0], 'current'):
-                    cpu_temp = group[0].current
-                    break
-
-            if cpu_temp == 0:
-                with open("/sys/class/thermal/thermal_zone0/temp") as f:
-                    cpu_temp = int(f.read()) / 1000.0
-        except:
-            cpu_temp = 0
-
-        usage = {
-            "timestamp": int(time.time() * 1000),
-            "readable_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "cpu": psutil.cpu_percent(),
-            "memory": psutil.virtual_memory().percent,
-            "temperature": round(cpu_temp, 1)
-        }
-
-        db.collection("system_health_logs").add(usage)
-        time.sleep(60)
-
-def clear_all_logs(keys=None):
-    global logging_paused
-    logging_paused = True
-    print("[LOGGING] Paused during log deletion")
-
-    all_collections = {
-        'battery_logs': 'Battery Logs',
-        'ultrasonic_logs': 'Ultrasonic Logs',
-        'motion_logs': 'Motion Logs',
-        'detection_logs': 'Detection Logs',
-        'location_logs': 'Location Logs',
-        'system_health_logs': 'System Health Logs',
-        'video_logs': 'Video Logs'
-    }
-
-    if not keys or keys == ['all']:
-        keys = list(all_collections.keys())
-
-    deleted_summary = []
-
-    for col in keys:
-        if col not in all_collections:
-            print(f"[SKIP] Unknown collection: {col}")
-            continue
-
-        docs = db.collection(col).stream()
-        deleted = 0
-        for doc in docs:
-            doc.reference.delete()
-            deleted += 1
-
-        print(f"[CLEAR] Deleted {deleted} documents from {col}")
-        deleted_summary.append(all_collections[col])
-
-    logging_paused = False
-    print("[LOGGING] Resumed after log deletion")
-    return deleted_summary
-
-def get_wifi_status():
-    try:
-        ssid = subprocess.check_output(["iwgetid", "-r"]).decode().strip()
-    except Exception:
-        ssid = "Not connected"
-
-    signal_strength = "N/A"
-    quality = "Unknown"
-
-    try:
-        iwconfig = subprocess.check_output(["iwconfig"]).decode()
-        match = re.search(r"Signal level=(-?\d+) dBm", iwconfig)
-        if match:
-            dbm = int(match.group(1))
-            signal_strength = f"{dbm} dBm"
-
-            if dbm >= -55:
-                quality = "Excellent"
-            elif dbm >= -65:
-                quality = "Good"
-            elif dbm >= -75:
-                quality = "Fair"
-            else:
-                quality = "Bad"
-    except Exception:
-        pass
-
-    try:
-        hostname = socket.gethostname()
-        ip_address = socket.gethostbyname(hostname)
-    except Exception:
-        ip_address = "Unavailable"
-
-    return {
-        "ssid": ssid,
-        "signal": signal_strength,
-        "quality": quality,
-        "ip": ip_address
-    }
-
-def record_video(picam2, duration_sec=2, fps=30):
-    video_dir = "/home/ada/de/videos"
-    if not os.path.exists(video_dir):
-        os.makedirs(video_dir)
-
-    filename = f"{video_dir}/alert_{int(time.time())}.avi"
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(filename, fourcc, fps, normalSize)
-
-    labels = read_label_file(LABEL_PATH)
-    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    for _ in range(int(duration_sec * fps)):
-        lores = picam2.capture_array("lores")
-        frame = picam2.capture_array("main")
-
-        resized = cv2.resize(lores, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
-        input_tensor = np.expand_dims(resized, axis=0)
-        interpreter.set_tensor(input_details[0]['index'], input_tensor)
-        interpreter.invoke()
-
-        boxes = interpreter.get_tensor(output_details[0]['index'])[0]
-        classes = interpreter.get_tensor(output_details[1]['index'])[0]
-        scores = interpreter.get_tensor(output_details[2]['index'])[0]
-
-        for i in range(len(scores)):
-            if scores[i] > 0.5:
-                ymin, xmin, ymax, xmax = boxes[i]
-                class_id = int(classes[i])
-                label = labels.get(class_id, f"id:{class_id}")
-                x1, y1 = int(xmin * normalSize[0]), int(ymin * normalSize[1])
-                x2, y2 = int(xmax * normalSize[0]), int(ymax * normalSize[1])
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-        out.write(frame)
-        time.sleep(1 / fps)
-
-    out.release()
-
-    bucket = storage.bucket()
-    blob = bucket.blob(f"videos/{filename.split('/')[-1]}")
-    blob.upload_from_filename(filename)
-    blob.make_public()
-    print(f"[VIDEO] Uploaded to Firebase Storage: {blob.public_url}")
-
-    db.collection('video_logs').add({
-        'timestamp': int(time.time() * 1000),
-        'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'video_url': blob.public_url
-    })
-
-    if os.path.exists(filename):
-        os.remove(filename)
-        print(f"[VIDEO] Deleted local video file: {filename}")
-    else:
-        print(f"[ERROR] Video file not found for deletion: {filename}")
-
-def upload_to_firebase_storage(local_filename, remote_filename):
-    bucket = storage.bucket()
-    blob = bucket.blob(remote_filename)
-    blob.upload_from_filename(local_filename)
-    blob.make_public()
-    print(f"File uploaded to {blob.public_url}")
-
-def record_video_with_frame(frame):
-    video_dir = "/home/ada/de/videos"
-    if not os.path.exists(video_dir):
-        os.makedirs(video_dir)
-
-    filename = f"{video_dir}/alert_{int(time.time())}.avi"
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(filename, fourcc, 30, normalSize)
-
-    for _ in range(60):  # 2 seconds at 30fps
-        out.write(frame)
-        time.sleep(1/30)
-
-    out.release()
-
-    bucket = storage.bucket()
-    blob = bucket.blob(f"videos/{filename.split('/')[-1]}")
-    blob.upload_from_filename(filename)
-    blob.make_public()
-
-    db.collection('video_logs').add({
-        'timestamp': int(time.time() * 1000),
-        'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'video_url': blob.public_url
-    })
-
-    if os.path.exists(filename):
-        os.remove(filename)
-
-def detection_loop():
-    global latest_frame, detection_active
-    labels = read_label_file(LABEL_PATH)
-    frame_counter = 0
-
-    INDOOR_MESSAGES = {
-        "person": "Someone is in the room. Move slowly to avoid bumping.",
-        "chair": "Chair ahead. Move slightly to the left or right.",
-        "couch": "Couch detected. Walk gently around it.",
-        "tv": "TV in front. Likely near a wall. Turn slightly.",
-        "bed": "Bed nearby. Use it as a guide or move around it.",
-        "sink": "Sink ahead. You may be in a bathroom or kitchen.",
-        "book": "Bookshelf or table ahead. Be cautious.",
-        "laptop": "Laptop detected. Likely on a desk. Avoid impact.",
-        "toilet": "Toilet detected. Bathroom likely. Step gently.",
-        "refrigerator": "Fridge ahead. You're near a kitchen zone."
-    }
-
-    OUTDOOR_MESSAGES = {
-        "person": "There is a person in front. Stay alert.",
-        "car": "Car detected ahead. Do not cross yet.",
-        "bus": "Bus nearby. Move cautiously away from the road.",
-        "bicycle": "Bicycle approaching. Step aside safely.",
-        "motorcycle": "Motorcycle detected. Wait before proceeding.",
-        "train": "Train detected. Stay clear of the tracks.",
-        "traffic light": "Traffic light ahead. Await signal.",
-        "stop sign": "Stop sign visible. Pause and assess surroundings.",
-        "dog": "Dog nearby. Proceed slowly.",
-        "bench": "Bench detected. You may rest here.",
-        "umbrella": "Umbrella detected. Walk carefully around it."
-    }
-
-    danger_scores = {
-        "person": 10, "car": 9, "bus": 9, "truck": 9, "motorcycle": 9, "train": 9,
-        "bicycle": 8, "horse": 8, "traffic light": 8, "stop sign": 8,
-        "dog": 7, "cat": 6, "cow": 6, "sheep": 6, "bench": 6, "zebra": 6,
-        "elephant": 5, "giraffe": 5, "bed": 5, "chair": 5, "couch": 5,
-        "toilet": 5, "dining table": 5, "tv": 4, "refrigerator": 4,
-        "microwave": 4, "oven": 4, "sink": 4, "potted plant": 4, "backpack": 4,
-        "umbrella": 4, "handbag": 3, "cell phone": 3, "laptop": 3, "book": 3,
-        "bottle": 3, "cup": 3, "fork": 2, "knife": 2, "spoon": 2, "bowl": 2,
-        "clock": 2, "remote": 2, "teddy bear": 2, "scissors": 2, "toaster": 2,
-        "wine glass": 1, "banana": 1, "pizza": 1, "cake": 1, "sandwich": 1, "apple": 1,
-    }
-
-    alert_classes = {
-        "person", "car", "bus", "truck", "motorcycle", "bicycle", "dog",
-        "traffic light", "stop sign", "bench", "cat", "cow", "sheep", "horse"
-    }
-
-    video_trigger_classes = {
-        "person", "car", "bus", "truck", "dog", "cat"
-    }
-
-    log_only_classes = {
-        "tv", "remote", "clock", "laptop", "bottle", "fork", "knife", "spoon", "teddy bear", "potted plant"
-    }
-
-    try:
-        interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-        interpreter.allocate_tensors()
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-    except Exception as e:
-        print("[ERROR] Failed to load TFLite model:", e)
-        return
-
-    last_video_time = 0
-    last_speak_time = 0
-    last_log_time = 0
-    last_detections = {}
-    recent_detections = []
-
-    try:
-        picam2 = Picamera2()
-        camera_config = picam2.create_preview_configuration(
-            main={"size": normalSize, "format": "RGB888"},
-            lores={"size": lowresSize, "format": "RGB888"}
-        )
-        picam2.configure(camera_config)
-        picam2.start()
-        time.sleep(2)
-
-        while True:
-            if not detection_active:
-                time.sleep(0.5)
-                continue
-
-            try:
-                lores = picam2.capture_array("lores")
-                frame = picam2.capture_array("main")
-                display_frame = frame.copy()
-            except Exception as e:
-                print("[CAMERA ERROR] Frame capture failed:", e)
-                continue
-
-            try:
-                resized = cv2.resize(lores, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
-                input_tensor = np.expand_dims(resized, axis=0).astype(np.uint8)
-                interpreter.set_tensor(input_details[0]['index'], input_tensor)
-                interpreter.invoke()
-
-                boxes = interpreter.get_tensor(output_details[0]['index'])[0]
-                classes = interpreter.get_tensor(output_details[1]['index'])[0]
-                scores = interpreter.get_tensor(output_details[2]['index'])[0]
-            except Exception as e:
-                print("[INFERENCE ERROR]", e)
-                continue
-
-            now = time.time()
-            allowed_labels = config_data.get("filter_classes", ["person"])
-            mode = "indoor" if config_data.get("indoor_mode", False) else "outdoor"
-            detection_count = 0
-
-            for i in range(len(scores)):
-                if scores[i] > 0.5:
-                    try:
-                        ymin, xmin, ymax, xmax = boxes[i]
-                        class_id = int(classes[i])
-                        label = labels.get(class_id, f"id:{class_id}").lower()
-
-                        if label not in [x.lower() for x in allowed_labels]:
-                            continue
-
-                        x1 = max(0, int(xmin * normalSize[0]))
-                        y1 = max(0, int(ymin * normalSize[1]))
-                        x2 = min(normalSize[0], int(xmax * normalSize[0]))
-                        y2 = min(normalSize[1], int(ymax * normalSize[1]))
-                        if x2 <= x1 or y2 <= y1:
-                            continue
-
-                        key = f"{label}_{x1}_{y1}_{x2}_{y2}"
-                        if key in last_detections and (now - last_detections[key] < 4):
-                            continue
-                        last_detections[key] = now
-
-                        box_area = (x2 - x1) * (y2 - y1)
-                        frame_area = normalSize[0] * normalSize[1]
-                        rel_size = box_area / frame_area
-                        if rel_size < 0.03:
-                            continue
-
-                        direction = "to your left" if x1 < normalSize[0] // 3 else \
-                                    "to your right" if x1 > 2 * normalSize[0] // 3 else "in front of you"
-
-                        base_msg = INDOOR_MESSAGES.get(label, f"{label} detected indoors.") if mode == "indoor" \
-                                   else OUTDOOR_MESSAGES.get(label, f"{label} detected ahead.")
-                        message = f"{base_msg} It is {direction}."
-
-                        if (label in alert_classes or danger_scores.get(label, 0) >= 5) and now - last_speak_time > 5 and voice_alert_enabled:
-                            push_message_to_clients(message)
-                            last_speak_time = now
-
-                        color = (0, 255, 0) if label == "person" else (0, 0, 255)
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(display_frame, f"{label} ({scores[i]*100:.1f}%)", (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-
-                        db.collection("detection_logs").add({
-                            "timestamp": int(now * 1000),
-                            "readable_time": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
-                            "label": label,
-                            "confidence": float(scores[i]),
-                            "bounding_box": {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2},
-                            "spoken_message": message,
-                            "source": "camera",
-                            "frame_id": frame_counter,
-                            "true_positive": 1,
-                            "false_positive": 0,
-                            "false_negative": 0
-                        })
-                        frame_counter += 1
-
-                        if rel_size > 0.10 and label in video_trigger_classes and (now - last_video_time > 10):
-                            video_frame_copy = display_frame.copy()
-                            threading.Thread(target=record_video_with_frame, args=(video_frame_copy,), daemon=True).start()
-                            last_video_time = now
-
-                        detection_count += 1
-
-                    except Exception as e:
-                        print("[DETECTION ERROR]", e)
-
-            recent_detections.append((now, detection_count))
-            recent_detections = [d for d in recent_detections if now - d[0] < 10]
-            if sum(d[1] for d in recent_detections) > 5:
-                push_message_to_clients("Multiple objects detected. Please stay alert.")
-                recent_detections.clear()
-
-            try:
-                ret, jpeg = cv2.imencode('.jpg', display_frame)
-                if ret:
-                    with frame_lock:
-                        latest_frame = jpeg.tobytes()
-            except Exception as e:
-                print("[ENCODE ERROR]", e)
-
-            if now - last_log_time > 5:
-                print(f"[DETECTION] {detection_count} object(s) processed.")
-                last_log_time = now
-
-    except Exception as e:
-        print("[THREAD ERROR]", e)
-    finally:
-        try:
-            picam2.stop()
-        except Exception as e:
-            print("[CAMERA STOP ERROR]", e)
-
-# API Routes
-@app.route('/wifi_status')
-def wifi_status():
-    return jsonify(get_wifi_status())
-
-@app.route("/shutdown", methods=["POST"])
-def shutdown_pi():
-    print("[SHUTDOWN] Shutdown route was triggered!")
-    try:
-        subprocess.run(["sudo", "shutdown", "now"], check=False)
-        return jsonify({"message": "Shutdown command sent."})
-    except Exception as e:
-        print("[SHUTDOWN] ERROR:", e)
-        return jsonify({"message": f"Shutdown failed: {e}"}), 500
-
-@app.route("/save_custom_labels", methods=["POST"])
-def save_custom_labels():
-    try:
-        labels = request.json.get("labels", [])
-        db.collection("config").document("custom_labels").set({
-            "labels": labels,
-            "timestamp": int(time.time() * 1000)
+        cpu_percent = psutil.cpu_percent()
+        mem_percent = psutil.virtual_memory().percent
+        temp = psutil.sensors_temperatures()
+        temperature = temp.get("cpu", None)[0].current if temp and temp.get("cpu") else None
+        db.collection('system_health_logs').add({
+            'timestamp': int(time.time() * 1000),
+            'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'cpu': cpu_percent,
+            'memory': mem_percent,
+            'temperature': temperature
         })
-        return jsonify({"status": "success", "labels": labels})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        time.sleep(5)
 
-@app.route("/load_custom_labels", methods=["GET"])
-def load_custom_labels():
+def load_config():
+    global config_data
     try:
-        doc = db.collection("config").document("custom_labels").get()
-        if doc.exists:
-            return jsonify({"status": "success", "labels": doc.to_dict().get("labels", [])})
-        return jsonify({"status": "empty", "labels": []})
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+            config_data = {**default_config, **config}
+            print("[CONFIG] Loaded config:", config_data)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        print(f"[CONFIG] Error loading config, using defaults: {e}")
+        config_data = default_config
+        save_config()
 
-@app.route("/video_feed")
-def video_feed():
-    def generate():
-        while True:
-            with frame_lock:
-                if latest_frame is None:
-                    continue
-                frame = latest_frame
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.05)
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-@app.route("/start", methods=["POST"])
-def start_detection():
-    global detection_active
-    detection_active = True
-    return jsonify({"status": "Detection started"})
-
-@app.route("/stop", methods=["POST"])
-def stop_detection():
-    global detection_active
-    detection_active = False
-    return jsonify({"status": "Detection stopped"})
-
-@app.route("/voice_alert_toggle", methods=["POST"])
-def voice_toggle():
-    global voice_alert_enabled
-    voice_alert_enabled = request.json.get("enabled", True)
-    return jsonify({"voice_alert_enabled": voice_alert_enabled})
-
-@app.route("/speak", methods=["POST"])
-def speak():
-    msg = request.json.get("message", "")
-    push_message_to_clients(msg)
-    return jsonify({"status": "spoken", "message": msg})
-
-@app.route("/reset_wifi", methods=["POST"])
-def reset_wifi():
+def save_config():
     try:
-        config_path = "/etc/wpa_supplicant/wpa_supplicant.conf"
-        backup_path = f"{config_path}.bak"
-        if os.path.exists(config_path):
-            shutil.move(config_path, backup_path)
-        os.system("sudo reboot")
-        return jsonify({"message": "Wi-Fi reset. Rebooting..."})
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config_data, f, indent=4)
+            print("[CONFIG] Saved config:", config_data)
     except Exception as e:
-        return jsonify({"message": f"Failed: {e}"})
+        print(f"[CONFIG] Error saving config: {e}")
 
-@app.route("/log_location", methods=["POST"])
-def log_location():
-    data = request.json
-    lat = data.get("lat")
-    lng = data.get("lng")
-    speed = data.get("speed", 0)
-    distance = data.get("distance", 0)
-    timestamp = data.get("timestamp", int(time.time() * 1000))
-
-    if lat is None or lng is None:
-        return jsonify({"status": "error", "message": "Missing lat/lng"}), 400
-
-    db.collection('location_logs').add({
-        "lat": lat,
-        "lng": lng,
-        "speed_kmh": round(speed, 2),
-        "distance_m": round(distance, 2),
-        "timestamp": timestamp,
-        "readable_time": datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
-    })
-
-    return jsonify({"status": "ok"})
-
-@app.route("/motion", methods=["POST"])
-def receive_motion():
-    data = request.get_json()
-    motion = data.get("moving")
-    global motion_active
-    motion_active = motion
-    db.collection('motion_logs').add({
-        'timestamp': int(time.time() * 1000),
-        'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'motion_status': 'active' if motion else 'inactive',
-        'motion_value': 1 if motion else 0
-    })
-    return jsonify({"status": "received", "motion": motion})
-
-@app.route('/latest_video')
-def latest_video():
+@app.route("/update_config", methods=["POST"])
+def update_config():
+    global config_data
     try:
-        with open("/home/ada/de/logs/video_clips/latest.txt", "r") as f:
-            path = f.read().strip()
-        return send_file(path, as_attachment=True)
+        new_config = request.json
+        print("[CONFIG] Received update:", new_config)
+        config_data = {**default_config, **new_config}
+        save_config()
+        return jsonify({"status": "success", "config": config_data})
     except Exception as e:
-        return f"Error loading video: {e}", 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route("/delete_logs", methods=["POST"])
-def delete_logs():
+@app.route("/clear_logs", methods=["POST"])
+def clear_logs():
     try:
         collections = [
             'battery_logs',
@@ -1098,15 +595,194 @@ def delete_logs():
             'system_health_logs',
             'video_logs'
         ]
-        for col in collections:
-            docs = db.collection(col).stream()
+        for collection in collections:
+            docs = db.collection(collection).stream()
             for doc in docs:
                 doc.reference.delete()
-        return jsonify({"status": "success", "message": "All logs deleted."})
+        return jsonify({"status": "success"})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Server startup functions
+@app.route("/restart", methods=["POST"])
+def restart_system():
+    try:
+        push_message_to_clients("System is restarting...")
+        subprocess.run(["sudo", "reboot"], check=True)
+        return jsonify({"status": "restarting"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/motion", methods=["POST"])
+def set_motion():
+    global motion_active
+    moving = request.json.get("moving", False)
+    motion_active = moving
+    db.collection('motion_logs').add({
+        'timestamp': int(time.time() * 1000),
+        'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'motion_value': moving
+    })
+    return jsonify({"status": "success", "motion_active": motion_active})
+
+def detect_objects(interpreter, frame, threshold=0.5):
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    _, height, width, _ = input_details[0]['shape']
+    resized_frame = cv2.resize(frame, (width, height))
+    input_data = np.expand_dims(resized_frame, axis=0)
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+    detections = interpreter.get_tensor(output_details[0]['index'])
+    return detections[0]
+
+def draw_bounding_boxes(frame, detections, labels, threshold=0.5):
+    height, width, _ = frame.shape
+    for detection in detections:
+        if detection[2] > threshold:
+            class_id = int(detection[1])
+            label = labels.get(class_id, "Unknown")
+            x1 = int(detection[3] * width)
+            y1 = int(detection[4] * height)
+            x2 = int(detection[5] * width)
+            y2 = int(detection[6] * height)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    return frame
+
+def detection_loop():
+    global latest_frame, detection_active, logging_paused, health_status
+    load_config()
+    labels = read_label_file(LABEL_PATH)
+    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+    try:
+        camera = Picamera2()
+        camera.preview_configuration.main.size = normalSize
+        camera.preview_configuration.main.format = "RGB888"
+        camera.start()
+        print("[CAMERA] Camera started")
+    except Exception as e:
+        print(f"[CAMERA] Error starting camera: {e}")
+        health_status = "Camera error"
+        return
+
+    frame_times = deque(maxlen=30)
+    detection_times = deque(maxlen=30)
+    start_time = time.time()
+    frame_count = 0
+    log_count = 0
+    true_positives = 0
+    false_positives = 0
+    false_negatives = 0
+    last_logged_time = time.time()
+    target_fps = 10
+    while True:
+        if not detection_active:
+            time.sleep(1)
+            continue
+        if logging_paused:
+            time.sleep(1)
+            continue
+        try:
+            frame = camera.capture_array()
+            if frame is None:
+                print("[DETECTION] Captured frame is None")
+                continue
+            frame_start_time = time.time()
+            frame_count += 1
+            latest_frame = frame.copy()
+            if frame_count % 3 != 0:
+                continue
+            det_start_time = time.time()
+            detections = detect_objects(interpreter, frame)
+            det_end_time = time.time()
+            detection_times.append(det_end_time - det_start_time)
+            filtered_detections = []
+            expected_classes = config_data.get("filter_classes", {}).get("indoor" if config_data.get("indoor_mode") else "outdoor", [])
+            if config_data.get("custom_mode"):
+                expected_classes = config_data.get("filter_classes", {}).get("indoor" if config_data.get("indoor_mode") else "outdoor")
+            for detection in detections:
+                class_id = int(detection[1])
+                label = labels.get(class_id, "Unknown")
+                if config_data.get("custom_mode"):
+                    if label in expected_classes:
+                        filtered_detections.append(detection)
+                elif label in expected_classes:
+                    filtered_detections.append(detection)
+                if label in expected_classes and detection[2] > 0.5:
+                    true_positives += 1
+                elif label not in expected_classes and detection[2] > 0.5:
+                    false_positives += 1
+                elif label in expected_classes and detection[2] <= 0.5:
+                    false_negatives += 1
+            frame = draw_bounding_boxes(frame, filtered_detections, labels)
+            frame_end_time = time.time()
+            frame_times.append(frame_end_time - frame_start_time)
+            fps = len(frame_times) / (frame_end_time - frame_times[0]) if frame_times else 0
+            latency = sum(detection_times) / len(detection_times) if detection_times else 0
+            precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+            accuracy = true_positives / (true_positives + false_positives + false_negatives) if (true_positives + false_positives + false_negatives) > 0 else 0
+            if frame_end_time - start_time >= 1:
+                print(f"[DETECTION] FPS: {fps:.2f}, Latency: {latency * 1000:.2f} ms")
+                start_time = frame_end_time
+            if time.time() - last_logged_time >= 5:
+                db.collection('detection_logs').add({
+                    'timestamp': int(time.time() * 1000),
+                    'readable_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'frame_id': frame_count,
+                    'fps': fps,
+                    'duration_ms': latency * 1000,
+                    'true_positive': true_positives,
+                    'false_positive': false_positives,
+                    'false_negative': false_negatives
+                })
+                log_count += 1
+                last_logged_time = time.time()
+                true_positives = 0
+                false_positives = 0
+                false_negatives = 0
+            _, jpeg = cv2.imencode('.jpg', frame)
+            with frame_lock:
+                latest_frame = jpeg.tobytes()
+            time_to_sleep = (1 / target_fps) - (time.time() - frame_start_time)
+            if time_to_sleep > 0:
+                time.sleep(time_to_sleep)
+        except Exception as e:
+            print(f"[DETECTION] Error in detection loop: {e}")
+            health_status = "Detection error"
+            try:
+                camera.close()
+            except:
+                pass
+            time.sleep(5)
+            try:
+                camera = Picamera2()
+                camera.preview_configuration.main.size = normalSize
+                camera.preview_configuration.main.format = "RGB888"
+                camera.start()
+                print("[CAMERA] Camera restarted")
+                health_status = "OK"
+            except Exception as e:
+                print(f"[CAMERA] Error restarting camera: {e}")
+                health_status = "Camera error"
+                return
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def generate_frames():
+    global latest_frame
+    while True:
+        with frame_lock:
+            if latest_frame is not None:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+            else:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + b'\r\n')
+        time.sleep(0.1)
+
 def start_flask():
     print("[FLASK] Starting Flask app...")
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
@@ -1144,7 +820,8 @@ if __name__ == "__main__":
             time.sleep(10)
 
     except KeyboardInterrupt:
-        print("[INFO] KeyboardInterrupt detected. Shutting down gracefully...")
-        if 'ngrok_proc' in locals() and ngrok_proc:
+        print("\n[MAIN] Shutting down...")
+        if ngrok_proc:
             ngrok_proc.terminate()
-            print("[NGROK] Tunnel closed")
+            ngrok_proc.wait()
+        print("[MAIN] Shutdown complete.")
