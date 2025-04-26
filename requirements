@@ -1,4 +1,4 @@
-lask==2.2.5
+flask==2.2.5
 
 flask-socketio==5.3.6
 
